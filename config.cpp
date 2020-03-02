@@ -1,9 +1,10 @@
 #include "config.h"
 #include "env.h"
+#include "reader.h"
 #include <fstream>
 #include <atomic>
 
-std::string pathJoin(const std::initializer_list<std::string> &pathList, const std::string &ext = "") {
+static std::string pathJoin(const std::initializer_list<std::string> &pathList, const std::string &ext = "") {
     std::string paths;
     for (auto path : pathList) {
         if (path.back() == '/') {
@@ -24,7 +25,7 @@ std::string pathJoin(const std::initializer_list<std::string> &pathList, const s
     return paths;
 }
 
-std::list<std::string> stringSplit(const std::string &s, const std::string &delim) {
+static std::list<std::string> stringSplit(const std::string &s, const std::string &delim) {
     std::size_t endIndex = s.find_first_of(delim);
     std::size_t startIndex = 0;
 
@@ -43,12 +44,29 @@ std::list<std::string> stringSplit(const std::string &s, const std::string &deli
     return lists;
 }
 
-void stringToLower(std::string &s) {
+static void stringToLower(std::string &s) {
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] >= 'A' && s[i] <= 'Z') {
             s[i] = s[i] - 'A' + 'a';
         }
     }
+}
+
+static std::istream &readAllStream(std::istream &is, std::string &result) {
+    char buffer[4096];
+    int  bytes = 0;
+
+    result.clear();
+    while ((bytes = is.readsome(buffer, 4096))) {
+        if (!is) {
+            return is;
+        }
+
+        if (bytes > 0) {
+            result.append(buffer, bytes);
+        }
+    }
+    return is;
 }
 
 Config::Config() {
@@ -89,18 +107,51 @@ Config::ErrorCode Config::MergeConfigJson(Config::json j) {
     if (!j.is_object()) {
         return IsNotObject;
     }
+
+    std::unique_lock<std::mutex> locker(m_mutex);
     return mergeToConfig(m_config, j);
 }
 
-Config::ErrorCode Config::MergeConfigJson(std::istream &is) {
+Config::ErrorCode Config::MergeConfigJson(std::istream &is, const std::string &type) {
     json streamJson;
-    if (!(is >> streamJson)) {
-        return StreamError;
+
+    if (type == "json") {
+        if (!(is >> streamJson)) {
+            return StreamError;
+        }
+    } else {
+        Reader *reader = GetReader(type);
+        if (reader == nullptr) {
+            return TypeUnsupported;
+        }
+        
+        Reader::ParseCode parseCode = Reader::OK;
+        if (reader->SupportStream()) {
+            parseCode = reader->Parse(is, streamJson);
+        } else {
+            std::string content;
+            std::istream &pis = readAllStream(is, content);
+            if (!pis.eof() || pis.good()) {
+                return StreamError;
+            }
+            parseCode = reader->Parse(content, streamJson);
+        }
+
+        switch (parseCode) {
+        case Reader::Failed:
+            return ParseFileFailed;
+        case Reader::StreamError:
+            return StreamError;
+        default:
+            break;
+        }
     }
+
     return MergeConfigJson(streamJson);
 }
 
 std::ostream &Config::WriteConfig(std::ostream &os) const {
+    std::unique_lock<std::mutex> locker(m_mutex);
     os << m_config;
     return os;
 }
@@ -193,6 +244,9 @@ Config::ErrorCode Config::mergeFileConfig() {
             m_configFile = filepath;
             break;
         }
+        if (code == TypeUnsupported) {
+            return TypeUnsupported;
+        }
     }
 
     if (code != OK) {
@@ -224,8 +278,21 @@ Config::ErrorCode Config::tryLoadFile(const std::string &filepath, json &config)
 
     //尝试解析json数据，若解析失败，那么返回ParseFileFailed，
     try {
-        config = json::parse(fileContent);
+        if (m_configType == "json") {
+            config = json::parse(fileContent);
+        } else {
+            Reader *reader = GetReader(m_configType);
+            if (reader == nullptr) {
+                return TypeUnsupported;
+            }
+            auto parseCode = reader->Parse(fileContent, config);
+            if (parseCode == Reader::Failed) {
+                return ParseFileFailed;
+            }
+        }
     } catch (std::exception const &e) {
+        return ParseFileFailed;
+    } catch (...) {
         return ParseFileFailed;
     }
     return OK;
@@ -264,4 +331,46 @@ void Config::SetDefault(Config *c) {
 
 Config *Config::Default() {
     return defaultConfig.load();
+}
+
+static std::mutex defaultReaderMux;
+static std::map<std::string, Reader*> defaultReaders;
+
+//RegisterReader 注册读取器
+bool Config::RegisterReader(Reader *r) {
+    if (r == nullptr) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> locker(defaultReaderMux);
+    if (defaultReaders.find(r->Type()) != defaultReaders.end()) {
+        return false;
+    }
+    
+    defaultReaders[r->Type()] = r;
+    return true;
+}
+
+//GetReader 获取对应类型的读取器
+Reader *Config::GetReader(const std::string &name) {
+    if (name == "") {
+        return nullptr;
+    }
+
+    std::unique_lock<std::mutex> locker(defaultReaderMux);
+    auto it = defaultReaders.find(name);
+    if (it == defaultReaders.end()) {
+        return nullptr;
+    }
+    return it->second;
+}
+
+bool Config::UnregisterReader(Reader *r) {
+    if (r == nullptr) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> locker(defaultReaderMux);
+    defaultReaders.erase(r->Type());
+    return true;
 }

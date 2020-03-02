@@ -4,7 +4,9 @@
 #include <nlohmann/json.hpp>
 #include <initializer_list>
 #include <list>
+#include <mutex>
 
+class Reader;
 //Config 配置类，用于加载和获取配置数据
 class Config {
 public:
@@ -20,7 +22,8 @@ public:
         LoadFileFailed,
         ParseFileFailed,
         IsNotObject,
-        StreamError
+        StreamError,
+        TypeUnsupported
     };
 
     typedef std::list<std::string> ConfigPathList;
@@ -71,7 +74,7 @@ public:
     ErrorCode MergeConfigJson(json j);
     //MergeConfigJson 从输入流中读取数据，并合并到配置数据中
     //若成功，返回OK,否则返回错误码
-    ErrorCode MergeConfigJson(std::istream &is);
+    ErrorCode MergeConfigJson(std::istream &is, const std::string &type = "json");
     //WriteConfig 将配置信息格式化写入到输出流中
     //返回值为输入参数os
     std::ostream &WriteConfig(std::ostream &os) const;
@@ -79,6 +82,12 @@ public:
     static void SetDefault(Config *c);
     //Default 静态函数，返回全局的配置对象
     static Config *Default();
+    //RegisterReader 注册读取器
+    static bool RegisterReader(Reader *r);
+    //UnregisterReader 注销读取器
+    static bool UnregisterReader(Reader *r);
+    //GetReader 获取对应类型的读取器
+    static Reader *GetReader(const std::string &name);
 protected:
     ErrorCode tryLoadFile(const std::string &filepath, json &config);
     ErrorCode mergeEnvConfig();
@@ -86,17 +95,20 @@ protected:
     ErrorCode mergeToConfig(json &target, json src);
     json *keysObject(const std::initializer_list<std::string> &keys);
 private:
-    bool            m_automaticEnv;
-    json            m_config;
-    ConfigPathList  m_configPaths;
-    std::string     m_configName;
-    std::string     m_configType;
-    std::string     m_envPrefix;
-    std::string     m_configFile;
+    bool                    m_automaticEnv;
+    json                    m_config;
+    ConfigPathList          m_configPaths;
+    std::string             m_configName;
+    std::string             m_configType;
+    std::string             m_envPrefix;
+    std::string             m_configFile;
+    mutable std::mutex      m_mutex;
 };
 
 template<typename T>
 Config::Value<T> Config::Get(const std::initializer_list<std::string> &path) {
+    std::unique_lock<std::mutex> locker(m_mutex);
+    
     Value<T> value;
     value.hasValue = false;
     json *conf = &m_config;
@@ -120,6 +132,8 @@ Config::Value<T> Config::Get(const std::initializer_list<std::string> &path) {
 
 template<typename T>
 bool Config::SetDefault(const std::initializer_list<std::string> &keys, const T &value) {
+    std::unique_lock<std::mutex> locker(m_mutex);
+    
     auto object = keysObject(keys);
     if (object != nullptr) {
         (*object) = value;
