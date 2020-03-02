@@ -1,0 +1,7 @@
+{
+    "databases": {
+        "leveldb": {
+            "filename": "data.db"
+        }
+    }
+}
