@@ -1,5 +1,5 @@
 # config-pp
-基于nlohmann/json的C++配置库,该库参考golang库的spf13/viper实现，再次感谢。
+基于nlohmann/json的C++配置库,该库参考golang库的spf13/viper实现。
 
 ## 安装
     git clone https://github.com/phantom-atom/config-pp
