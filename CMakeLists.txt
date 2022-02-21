@@ -4,8 +4,8 @@ project(config-pp VERSION 0.1.0)
 include(CTest)
 enable_testing()
 
-link_libraries(-lyaml-cpp)
-add_library(config-pp env.cpp config.cpp ./reader/yaml.cpp)
+include_directories(${PROJECT_SOURCE_DIR}/third_party/nlohmann_json/include)
+add_library(config-pp env.cpp config.cpp)
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
 set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})

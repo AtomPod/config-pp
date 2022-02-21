@@ -1,5 +1,6 @@
 #include "env.h"
 #include <mutex>
+#include <string>
 
 static std::once_flag initEnvMap;
 static Environment::EnvironmentMap GlobalEnvMap; 
@@ -25,8 +26,8 @@ static void initGlobalEnvMap() {
                 GetEnvironmentStrings(), free);
 
     for (LPTCH i = env_block.get(); *i != TCHAR('\0'); ++i) {
-        tstring key;
-        tstring value;
+        std::string key;
+        std::string value;
 
         for (; *i != TCHAR('='); ++i) {
             key += *i;
